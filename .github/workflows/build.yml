@@ -1,8 +1,14 @@
 
-name: APK Decompiler
+name: Universal Decompiler
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   decompile:
@@ -11,47 +17,123 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
-      - name: Set up Java
+      - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: 21
 
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl jq unzip
+
       - name: Download JADX
         run: |
-          wget -q https://github.com/skylot/jadx/releases/latest/download/jadx-1.5.3.zip -O jadx.zip
-          unzip -q jadx.zip -d jadx
+          URL=$(curl -fsSL \
+            https://api.github.com/repos/skylot/jadx/releases/latest |
+            jq -r '[.assets[] | select(.name | test("^jadx-.*\\.zip$"))][0].browser_download_url')
+
+          test "$URL" != "null"
+          curl -fL "$URL" -o jadx.zip
+          unzip -q jadx.zip -d jadx-dist
+
+          JADX=$(find jadx-dist -type f -path '*/bin/jadx' | head -n 1)
+          test -n "$JADX"
+          chmod +x "$JADX"
+
+          echo "JADX=$PWD/$JADX" >> "$GITHUB_ENV"
 
       - name: Download Apktool
         run: |
-          wget -q https://github.com/iBotPeaches/Apktool/releases/latest/download/apktool_2.12.1.jar -O apktool.jar
+          URL=$(curl -fsSL \
+            https://api.github.com/repos/iBotPeaches/Apktool/releases/latest |
+            jq -r '[.assets[] | select(.name | test("^apktool_.*\\.jar$"))][0].browser_download_url')
 
-      - name: Find APK files
+          test "$URL" != "null"
+          curl -fL "$URL" -o apktool.jar
+
+          echo "APKTOOL=$PWD/apktool.jar" >> "$GITHUB_ENV"
+
+      - name: Detect and decompile
+        id: decompile
+        shell: bash
         run: |
-          mkdir -p output
-          find . -type f -name "*.apk" \
-            -not -path "./output/*" \
-            -print0 > apk-list
+          WORKDIR="$RUNNER_TEMP/decompiled-output"
+          mkdir -p "$WORKDIR"
 
-      - name: Decompile APKs
-        run: |
-          while IFS= read -r -d '' apk; do
-            name=$(basename "$apk" .apk)
-            echo "Decompiling $name"
+          count=0
 
-            mkdir -p "output/$name/jadx"
-            mkdir -p "output/$name/apktool"
+          while IFS= read -r -d '' file; do
+            rel="${file#./}"
+            ext="${file##*.}"
+            ext=$(echo "$ext" | tr '[:upper:]' '[:lower:]')
 
-            jadx/bin/jadx -d "output/$name/jadx" "$apk" || true
-            java -jar apktool.jar d -f "$apk" -o "output/$name/apktool" || true
-          done < apk-list
+            case "$ext" in
+              apk|dex|jar|class|aar|aab|zip|xapk|apkm|apks)
+                ;;
+              *)
+                continue
+                ;;
+            esac
 
-      - name: Upload decompiled files
+            count=$((count + 1))
+            out="$WORKDIR/$rel"
+
+            mkdir -p "$out"
+
+            echo "================================"
+            echo "Processing: $rel"
+            echo "Format: $ext"
+
+            if [ "$ext" = "apk" ]; then
+              echo "Running JADX..."
+              if ! "$JADX" -d "$out/jadx" "$file"; then
+                echo "JADX failed on $rel"
+              fi
+
+              echo "Running Apktool..."
+              if ! java -jar "$APKTOOL" d -f "$file" \
+                -o "$out/apktool"; then
+                echo "Apktool failed on $rel"
+              fi
+            else
+              echo "Running JADX..."
+              if ! "$JADX" -d "$out/jadx" "$file"; then
+                echo "JADX failed on $rel"
+              fi
+            fi
+
+          done < <(
+            find . -type f \
+              -not -path './.git/*' \
+              -not -path './.github/*' \
+              -not -path './jadx-dist/*' \
+              -not -name 'jadx.zip' \
+              -not -name 'apktool.jar' \
+              -print0
+          )
+
+          echo "Processed $count supported files."
+
+          if [ "$count" -eq 0 ]; then
+            echo "No supported files found."
+            exit 0
+          fi
+
+          echo "has_files=true" >> "$GITHUB_OUTPUT"
+
+          echo "Processed files: $count" > "$WORKDIR/_report.txt"
+
+      - name: Upload decompiled results
+        if: steps.decompile.outputs.has_files == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: decompiled-apks
-          path: output/
+          name: decompiled-files
+          path: ${{ runner.temp }}/decompiled-output/
           if-no-files-found: error
           compression-level: 6
           retention-days: 7
