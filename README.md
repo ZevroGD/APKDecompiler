@@ -6,17 +6,17 @@ Upload supported files to the repository, commit your changes, and GitHub Action
 
 Supported formats
 
-File type| Processing
-APK| JADX + Apktool
-DEX| JADX
-JAR| JADX
-CLASS| JADX
-AAR| JADX
-AAB| JADX
-ZIP| JADX
-XAPK| JADX
-APKM| JADX
-APKS| JADX
+File type| Tools
+".apk"| JADX + Apktool
+".dex"| JADX
+".jar"| JADX
+".class"| JADX
+".aar"| JADX
+".aab"| JADX
+".zip"| JADX
+".xapk"| JADX
+".apkm"| JADX
+".apks"| JADX
 
 JADX extracts Java source code, while Apktool decodes Android resources and Smali code from APKs.
 
@@ -24,17 +24,26 @@ How to use
 
 1. Upload your files anywhere in the repository.
 2. Commit and push your changes to "main".
-3. Open the Actions tab.
-4. Wait for the decompilation workflow to finish.
-5. Download the "decompiled-files" artifact.
+3. GitHub Actions automatically starts the workflow.
+4. Wait for decompilation to finish.
+5. Download either the ZIP or TAR artifact from the Actions run.
 
 That's it!
 
 Results
 
-All decompiled files are packaged into a single downloadable ZIP artifact.
+Two downloadable artifacts are generated:
 
-The original repository remains untouched by the decompilation process. Generated files are stored temporarily on the GitHub Actions runner.
+- decompiled-files-zip: Compressed ZIP archive, suitable for smaller downloads.
+- decompiled-files-tar: Uncompressed TAR archive, suitable for faster extraction.
+
+Both contain the same decompiled files.
+
+Before uploading, both archives are checked for integrity.
+
+Successfully processed original files are automatically deleted from the repository and the deletion is committed by GitHub Actions. Files that fail processing are kept.
+
+Generated files are stored temporarily on the GitHub Actions runner.
 
 Artifacts are retained for 7 days.
 
@@ -46,10 +55,13 @@ Technologies
 
 Notes
 
-- Previously uploaded supported files are processed again on subsequent pushes.
+- Previously uploaded supported files are processed again on subsequent pushes if they remain in the repository.
+- Successfully processed files are automatically removed.
 - Unsupported file types are skipped.
 - Individual decompilation failures do not necessarily stop the entire workflow.
+- Failed files remain in the repository.
 - Large files may take longer to process.
+- The workflow requires repository write permissions to delete and commit processed files.
 - This project is intended for legitimate software inspection and reverse engineering.
 
 License
