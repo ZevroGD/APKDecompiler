@@ -6,17 +6,16 @@ Upload supported files to the repository, commit your changes, and GitHub Action
 
 Supported formats
 
-File type| Tools
-".apk"| JADX + Apktool
-".dex"| JADX
-".jar"| JADX
-".class"| JADX
-".aar"| JADX
-".aab"| JADX
-".zip"| JADX
-".xapk"| JADX
-".apkm"| JADX
-".apks"| JADX
+- APK: JADX + Apktool
+- DEX: JADX
+- JAR: JADX
+- CLASS: JADX
+- AAR: JADX
+- AAB: JADX
+- ZIP: JADX
+- XAPK: JADX
+- APKM: JADX
+- APKS: JADX
 
 JADX extracts Java source code, while Apktool decodes Android resources and Smali code from APKs.
 
