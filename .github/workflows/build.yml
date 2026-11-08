@@ -1,4 +1,3 @@
-
 name: Universal Decompiler
 
 on:
@@ -8,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   decompile:
@@ -29,7 +28,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl jq unzip
+          sudo apt-get install -y curl jq unzip zip tar
 
       - name: Download JADX
         run: |
@@ -63,9 +62,13 @@ jobs:
         shell: bash
         run: |
           WORKDIR="$RUNNER_TEMP/decompiled-output"
+          SUCCESS_LIST="$RUNNER_TEMP/successful-inputs.txt"
+
           mkdir -p "$WORKDIR"
+          : > "$SUCCESS_LIST"
 
           count=0
+          successful=0
 
           while IFS= read -r -d '' file; do
             rel="${file#./}"
@@ -89,22 +92,35 @@ jobs:
             echo "Processing: $rel"
             echo "Format: $ext"
 
+            success=true
+
             if [ "$ext" = "apk" ]; then
               echo "Running JADX..."
               if ! "$JADX" -d "$out/jadx" "$file"; then
                 echo "JADX failed on $rel"
+                success=false
               fi
 
               echo "Running Apktool..."
               if ! java -jar "$APKTOOL" d -f "$file" \
                 -o "$out/apktool"; then
                 echo "Apktool failed on $rel"
+                success=false
               fi
             else
               echo "Running JADX..."
               if ! "$JADX" -d "$out/jadx" "$file"; then
                 echo "JADX failed on $rel"
+                success=false
               fi
+            fi
+
+            if [ "$success" = true ]; then
+              successful=$((successful + 1))
+              printf '%s\0' "$rel" >> "$SUCCESS_LIST"
+              echo "Successfully processed: $rel"
+            else
+              echo "Keeping original file because processing failed."
             fi
 
           done < <(
@@ -117,23 +133,83 @@ jobs:
               -print0
           )
 
-          echo "Processed $count supported files."
+          echo "================================"
+          echo "Detected: $count"
+          echo "Successfully processed: $successful"
 
-          if [ "$count" -eq 0 ]; then
-            echo "No supported files found."
+          if [ "$successful" -eq 0 ]; then
+            echo "No successfully processed files."
             exit 0
           fi
 
           echo "has_files=true" >> "$GITHUB_OUTPUT"
 
-          echo "Processed files: $count" > "$WORKDIR/_report.txt"
+          echo "Detected: $count" > "$WORKDIR/_report.txt"
+          echo "Successfully processed: $successful" >> "$WORKDIR/_report.txt"
 
-      - name: Upload decompiled results
+      - name: Create and verify ZIP and TAR
+        if: steps.decompile.outputs.has_files == 'true'
+        run: |
+          cd "$RUNNER_TEMP"
+
+          echo "Creating ZIP..."
+          zip -qr decompiled-files.zip decompiled-output/
+
+          echo "Creating TAR..."
+          tar -cf decompiled-files.tar decompiled-output/
+
+          echo "Verifying ZIP..."
+          unzip -t decompiled-files.zip
+
+          echo "Verifying TAR..."
+          tar -tf decompiled-files.tar > /dev/null
+
+          echo "Both archives passed integrity checks."
+
+      - name: Upload ZIP
         if: steps.decompile.outputs.has_files == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: decompiled-files
-          path: ${{ runner.temp }}/decompiled-output/
+          name: decompiled-files-zip
+          path: ${{ runner.temp }}/decompiled-files.zip
           if-no-files-found: error
-          compression-level: 6
+          compression-level: 0
           retention-days: 7
+
+      - name: Upload TAR
+        if: steps.decompile.outputs.has_files == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: decompiled-files-tar
+          path: ${{ runner.temp }}/decompiled-files.tar
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+      - name: Delete successfully processed originals
+        if: steps.decompile.outputs.has_files == 'true'
+        shell: bash
+        run: |
+          SUCCESS_LIST="$RUNNER_TEMP/successful-inputs.txt"
+
+          if [ ! -s "$SUCCESS_LIST" ]; then
+            echo "No files to delete."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          while IFS= read -r -d '' file; do
+            echo "Deleting: $file"
+            git rm -- "$file"
+          done < "$SUCCESS_LIST"
+
+          if git diff --cached --quiet; then
+            echo "No deletions to commit."
+            exit 0
+          fi
+
+          git commit -m "Remove successfully decompiled files"
+
+          git push
