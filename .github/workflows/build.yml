@@ -36,11 +36,14 @@ jobs:
             https://api.github.com/repos/skylot/jadx/releases/latest |
             jq -r '[.assets[] | select(.name | test("^jadx-.*\\.zip$"))][0].browser_download_url')
 
+          test -n "$URL"
           test "$URL" != "null"
+
           curl -fL "$URL" -o jadx.zip
           unzip -q jadx.zip -d jadx-dist
 
           JADX=$(find jadx-dist -type f -path '*/bin/jadx' | head -n 1)
+
           test -n "$JADX"
           chmod +x "$JADX"
 
@@ -52,7 +55,9 @@ jobs:
             https://api.github.com/repos/iBotPeaches/Apktool/releases/latest |
             jq -r '[.assets[] | select(.name | test("^apktool_.*\\.jar$"))][0].browser_download_url')
 
+          test -n "$URL"
           test "$URL" != "null"
+
           curl -fL "$URL" -o apktool.jar
 
           echo "APKTOOL=$PWD/apktool.jar" >> "$GITHUB_ENV"
@@ -69,10 +74,11 @@ jobs:
 
           count=0
           successful=0
+          any_output=false
 
           while IFS= read -r -d '' file; do
             rel="${file#./}"
-            ext="${file##*.}"
+            ext="${rel##*.}"
             ext=$(echo "$ext" | tr '[:upper:]' '[:lower:]')
 
             case "$ext" in
@@ -86,41 +92,89 @@ jobs:
             count=$((count + 1))
             out="$WORKDIR/$rel"
 
-            mkdir -p "$out"
+            mkdir -p "$out/_logs"
+
+            input_success=false
 
             echo "================================"
             echo "Processing: $rel"
             echo "Format: $ext"
 
-            success=true
+            # JADX
+            echo "Running JADX..."
 
-            if [ "$ext" = "apk" ]; then
-              echo "Running JADX..."
-              if ! "$JADX" -d "$out/jadx" "$file"; then
-                echo "JADX failed on $rel"
-                success=false
-              fi
+            mkdir -p "$out/jadx"
 
-              echo "Running Apktool..."
-              if ! java -jar "$APKTOOL" d -f "$file" \
-                -o "$out/apktool"; then
-                echo "Apktool failed on $rel"
-                success=false
+            if "$JADX" -d "$out/jadx" "$file" \
+              > "$out/_logs/jadx.log" 2>&1; then
+
+              jadx_exit=0
+            else
+              jadx_exit=$?
+            fi
+
+            if find "$out/jadx" -type f -print -quit | grep -q .; then
+              any_output=true
+
+              if [ "$jadx_exit" -eq 0 ]; then
+                echo "JADX completed successfully."
+                input_success=true
+              else
+                echo "JADX produced partial output."
+                echo "Exit code: $jadx_exit"
               fi
             else
-              echo "Running JADX..."
-              if ! "$JADX" -d "$out/jadx" "$file"; then
-                echo "JADX failed on $rel"
-                success=false
+              echo "JADX produced no output."
+              echo "Exit code: $jadx_exit"
+            fi
+
+            if [ "$jadx_exit" -ne 0 ]; then
+              echo "Last JADX log lines:"
+              tail -n 40 "$out/_logs/jadx.log"
+            fi
+
+            # Apktool (APK only)
+            if [ "$ext" = "apk" ]; then
+              echo "Running Apktool..."
+
+              if java -jar "$APKTOOL" d -f "$file" \
+                -o "$out/apktool" \
+                > "$out/_logs/apktool.log" 2>&1; then
+
+                apktool_exit=0
+              else
+                apktool_exit=$?
+              fi
+
+              if find "$out/apktool" -type f -print -quit | grep -q .; then
+                any_output=true
+
+                if [ "$apktool_exit" -eq 0 ]; then
+                  echo "Apktool completed successfully."
+                  input_success=true
+                else
+                  echo "Apktool produced partial output."
+                  echo "Exit code: $apktool_exit"
+                fi
+              else
+                echo "Apktool produced no output."
+                echo "Exit code: $apktool_exit"
+              fi
+
+              if [ "$apktool_exit" -ne 0 ]; then
+                echo "Last Apktool log lines:"
+                tail -n 40 "$out/_logs/apktool.log"
               fi
             fi
 
-            if [ "$success" = true ]; then
+            # Record successfully processed originals
+            if [ "$input_success" = true ]; then
               successful=$((successful + 1))
               printf '%s\0' "$rel" >> "$SUCCESS_LIST"
-              echo "Successfully processed: $rel"
+              echo "RESULT: SUCCESS"
             else
-              echo "Keeping original file because processing failed."
+              echo "RESULT: FAILED OR PARTIAL"
+              echo "Original file will be kept."
             fi
 
           done < <(
@@ -134,21 +188,27 @@ jobs:
           )
 
           echo "================================"
-          echo "Detected: $count"
+          echo "Detected files: $count"
           echo "Successfully processed: $successful"
-
-          if [ "$successful" -eq 0 ]; then
-            echo "No successfully processed files."
-            exit 0
-          fi
-
-          echo "has_files=true" >> "$GITHUB_OUTPUT"
 
           echo "Detected: $count" > "$WORKDIR/_report.txt"
           echo "Successfully processed: $successful" >> "$WORKDIR/_report.txt"
+          echo "Partial or failed: $((count - successful))" >> "$WORKDIR/_report.txt"
+
+          if [ "$any_output" = true ]; then
+            echo "has_output=true" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$successful" -gt 0 ]; then
+            echo "has_successful_inputs=true" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$any_output" = false ]; then
+            echo "No decompilation output was generated."
+          fi
 
       - name: Create and verify ZIP and TAR
-        if: steps.decompile.outputs.has_files == 'true'
+        if: steps.decompile.outputs.has_output == 'true'
         run: |
           cd "$RUNNER_TEMP"
 
@@ -162,12 +222,12 @@ jobs:
           unzip -t decompiled-files.zip
 
           echo "Verifying TAR..."
-          tar -tf decompiled-files.tar > /dev/null
+          tar -df decompiled-files.tar
 
           echo "Both archives passed integrity checks."
 
       - name: Upload ZIP
-        if: steps.decompile.outputs.has_files == 'true'
+        if: steps.decompile.outputs.has_output == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: decompiled-files-zip
@@ -177,7 +237,7 @@ jobs:
           retention-days: 7
 
       - name: Upload TAR
-        if: steps.decompile.outputs.has_files == 'true'
+        if: steps.decompile.outputs.has_output == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: decompiled-files-tar
@@ -187,15 +247,10 @@ jobs:
           retention-days: 7
 
       - name: Delete successfully processed originals
-        if: steps.decompile.outputs.has_files == 'true'
+        if: steps.decompile.outputs.has_successful_inputs == 'true'
         shell: bash
         run: |
           SUCCESS_LIST="$RUNNER_TEMP/successful-inputs.txt"
-
-          if [ ! -s "$SUCCESS_LIST" ]; then
-            echo "No files to delete."
-            exit 0
-          fi
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
