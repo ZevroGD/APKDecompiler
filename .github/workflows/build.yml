@@ -30,16 +30,30 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y curl jq unzip zip tar
 
+      
       - name: Download JADX
         run: |
-          URL=$(curl -fsSL \
-            https://api.github.com/repos/skylot/jadx/releases/latest |
-            jq -r '[.assets[] | select(.name | test("^jadx-.*\\.zip$"))][0].browser_download_url')
+          RELEASE=$(curl -fsSL \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/skylot/jadx/releases/latest)
 
-          test -n "$URL"
-          test "$URL" != "null"
+          ASSET_ID=$(echo "$RELEASE" | jq -r \
+            '[.assets[] | select(.name | test("^jadx-[0-9].*\\.zip$"))][0].id')
 
-          curl -fL "$URL" -o jadx.zip
+          ASSET_NAME=$(echo "$RELEASE" | jq -r \
+            '[.assets[] | select(.name | test("^jadx-[0-9].*\\.zip$"))][0].name')
+
+          test -n "$ASSET_ID"
+          test "$ASSET_ID" != "null"
+
+          echo "Downloading $ASSET_NAME..."
+
+          curl -fL --retry 3 \
+            -H "Accept: application/octet-stream" \
+            "https://api.github.com/repos/skylot/jadx/releases/assets/$ASSET_ID" \
+            -o jadx.zip
+
+          unzip -t jadx.zip
           unzip -q jadx.zip -d jadx-dist
 
           JADX=$(find jadx-dist -type f -path '*/bin/jadx' | head -n 1)
@@ -48,6 +62,9 @@ jobs:
           chmod +x "$JADX"
 
           echo "JADX=$PWD/$JADX" >> "$GITHUB_ENV"
+
+          echo "JADX successfully installed."
+
 
       - name: Download Apktool
         run: |
